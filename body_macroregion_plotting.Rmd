@@ -1,0 +1,434 @@
+---
+title: "body_macroregion_plotting"
+author: "Paul Gaudin"
+date: '2024-04-02'
+output: html_document
+---
+
+## Load Necessary Libraries
+
+```{r}
+
+# to install updated CHOIRBM, navigate into CHOIRBM directory ( setwd('CHOIRBM') ) and then run devtools::install()
+library(CHOIRBM)
+# - use to check package version - should print ‘0.0.2.9001’ if updated CHOIRBM packaged loaded
+packageVersion("CHOIRBM") 
+
+
+# Load other necessary packages
+# install.packages(c("readxl", "dplyr", "tidyr", "stringr", "gt", "webshot2")) # webshot2 needed for saving gt tables
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(gt)
+library(ggplot2)
+
+```
+
+## Create Necessary Lists
+
+
+```{r}
+
+## color palette that will be used in macroregion plotting. 1st will show as region with highest percentage, last with lowest
+new_color_palette <- c(
+  "#F8BBD0", # Pastel Red
+  "#FFCCBC", # Pastel Orange
+  "#FFF9C4", # Pastel Yellow
+  "#C8E6C9", # Pastel Light Green
+  "#B2DFDB", # Pastel Green-Blue (Aqua)
+  "#B3E5FC", # Pastel Blue
+  "#BBDEFB", # Lighter Blue
+  "#D1C4E9", # Pastel Purple
+  "#F3E5F5", # Lighter Purple
+  "#F5F5F5", # Very Light Grey
+  "#FFFFFF"  # White
+)
+
+## map to assign microregions to macroregions
+body_map <- list(
+  "head_front" = c(101, 102, 103, 104),
+  "head_back" = c(201, 202, 203, 204),
+  "neck" = c(105, 106, 205, 206),
+  "right_shoulder_arm" = c(107, 111, 115, 117, 119, 125, 210, 214, 216, 220, 226, 230),
+  "left_should_arm" = c(110, 114, 116, 118, 124, 128, 207, 211, 215, 217, 221, 227),
+  "upper_back" = c(208, 209, 212, 213),
+  "lower_back" = c(218, 219),
+  "chest_abdomen" = c(108, 109, 112, 113),
+  "pelvic" = c(121, 122),
+  "right_hip_buttock_leg" = c(120, 126, 129, 131, 133, 135, 224, 225, 229, 232, 234, 236, 238),
+  "left_hip_buttock_leg" = c(123, 127, 130, 132, 134, 136, 222, 223, 228, 231, 233, 235, 237)
+)
+
+## map for naming conventions for macroregions
+body_map_pain_macroregion_format_list <- list(
+  "head_front" = "Head Front",
+  "head_back" = "Head Back",
+  "neck" = "Neck",
+  "right_shoulder_arm" = "Right Shoulder/Arm",
+  "left_should_arm" = "Left Shoulder/Arm",
+  "upper_back" = "Upper Back",
+  "lower_back" = "Lower Back",
+  "chest_abdomen" = "Chest/Abdomen",
+  "pelvic" = "Pelvic",
+  "right_hip_buttock_leg" = "Right Hip/Buttock/Leg",
+  "left_hip_buttock_leg" = "Left Hip/Buttock/Leg"
+)
+
+
+
+```
+
+## Import Data from Excel file
+
+```{r}
+# Import the Excel file
+data <- read_excel("lupus body map counts by gender.xlsx")
+
+```
+
+## Create Variables and Define Necessary Functions for Male and Female Tables 
+
+```{r}
+
+## list of all numbers - necessary in case any are missing from male/female data 
+all_body_map_numbers <- unique(unlist(body_map))
+
+
+calculateRegionOccurrences <- function(df, body_map, gender) {
+  # This function is used to determine total occurrences of any number within macroregion for each patient, and the percent occurrences
+  #
+  # Parameters:
+  #   df: the data.frame from the excel file 
+  #   body_map: the body_map list
+  #   gender: string "Female" or "Male" 
+  #
+  # Returns:
+  #   2 named lists, total_occurrences and percent_occurrences
+  #
+
+  # Filter DataFrame for gender
+  df_gender <- df[df$patient_gender == gender, ]
+  
+  # List to hold the occurrence counts for each region, starting with 0
+  region_occurrences <- sapply(names(body_map), function(x) 0)
+  
+  # Iterate over each row in df_gender (filtered data by gender) and add occurrence if microregion within macroregion present
+  for (i in 1:nrow(df_gender)) {
+    # Split the "bodymap_regions_csv" string into a vector of numbers
+    regions_vector <- as.numeric(unlist(strsplit(as.character(df_gender$bodymap_regions_csv[i]), ",")))
+    # Check each body map region for occurrence
+    for (region_name in names(body_map)) {
+      region_ids <- body_map[[region_name]]
+      # Add if any region ID is present in the regions_vector
+      if (any(region_ids %in% regions_vector)) {
+        region_occurrences[region_name] <- region_occurrences[region_name] + 1
+      }
+    }
+  }
+  
+  # Calculate the perfect occurrences for each region
+  percent_occurrences <- sapply(region_occurrences, function(x) round((x / nrow(df_gender) * 100), 2))
+  
+  return(list(
+    total_occurrences = region_occurrences,
+    percent_occurrences = percent_occurrences
+  ))
+}
+
+## function 
+getGenderTables <- function(data, gender, body_map, body_map_pain_macroregion_format_list, new_color_palette) {
+  # This function is used to generate the formatted tables with gt package, as well the gender_region_occurrences named list that will be used in the body image plotting
+  #
+  # Parameters:
+  #   data: the excel data.frame
+  #   gender: "Male" or "Female" string 
+  #   body_map: the body_map named list 
+  #   body_map_pain_macroregion_format_list: the named list that converts the names in body_map to their display names 
+  #   new_color_palette: the color palette used for the tables and body images generated
+  #
+  # Returns:
+  #   Named list, with Table being the gt generated table, and Occurrences being the named list with the total and percent occurences as sub named lists
+  #
+  
+  ## calculate and assign the total and percent occurrences
+  gender_region_occurrences <- calculateRegionOccurrences(data, body_map, gender)
+  
+  ## assign the properly formatted names for the table 
+  body_map_regions <- sapply(names(body_map_pain_macroregion_format_list), function(key) body_map_pain_macroregion_format_list[[key]])
+  ## assign the percent occurences
+  overall_percentages <- gender_region_occurrences$percent_occurrences[names(body_map_pain_macroregion_format_list)]
+
+  # create data.frame with necessary the :Body Map Pain Region" and "Overall" columns
+  pain_regions_df <- data.frame(
+    "Body Map Pain Regions" = body_map_regions,
+    "Overall" = overall_percentages,
+    stringsAsFactors = FALSE
+  )
+  
+  # assign Ranks and Colors for each of the rows, so colors will reflect the percents
+  pain_regions_df$Rank <- rank(-pain_regions_df$Overall, ties.method = "first")
+  pain_regions_df$Color <- new_color_palette[pain_regions_df$Rank]
+
+  # calculate total indivuals and create label for "Overall" column 
+  num_individuals <- nrow(data[data$patient_gender == gender, ])
+  overall_label <- paste("Overall (n=", num_individuals, ")", " ", gender, sep = "")
+
+  # create gt_table 
+  gt_table <- gt(pain_regions_df) %>%
+    cols_label(
+      Body.Map.Pain.Regions = "Body Map Pain Regions",
+      Overall = overall_label 
+    ) %>%
+    tab_options(column_labels.font.weight = "bold")
+
+
+
+  # Format the "Overall" column to include a percentage sign for the percents
+  gt_table <- gt_table %>%
+    fmt_number(
+      columns = c(Overall),
+      decimals = 2, # Assuming you want two decimal places; adjust as needed
+      suffixing = TRUE,
+      pattern = "{x}%"
+    )
+
+  # Add borders to the gt_table 
+  gt_table <- gt_table %>%
+    # Apply borders to the body of the table
+    tab_style(
+      style = cell_borders(
+        sides = "all", # Apply borders to all sides of each cell in the body
+        color = "gray",
+        weight = px(1)
+      ),
+      locations = cells_body(columns = everything(), rows = TRUE)
+    ) %>%
+    # Apply borders to the column labels
+    tab_style(
+      style = cell_borders(
+        sides = "all", # Apply borders to all sides of the column label cells
+        color = "gray",
+        weight = px(1)
+      ),
+      locations = cells_column_labels(columns = everything())
+    ) %>%
+    # Apply borders to the table title
+    tab_style(
+      style = cell_borders(
+        sides = "all", # Apply borders around the table title
+        color = "gray",
+        weight = px(1)
+      ),
+      locations = cells_title(groups = "title")
+    ) 
+  
+  # Apply colors to the gt_table row-wise based on 'Rank'
+  for (rank in unique(pain_regions_df$Rank)) {
+    color <- pain_regions_df$Color[pain_regions_df$Rank == rank][1]
+    gt_table <- gt_table %>%
+      tab_style(
+        style = cell_fill(color = color),
+        locations = cells_body(
+          columns = everything(),
+          rows = pain_regions_df$Rank == rank
+        )
+      )
+  }
+
+  # Hide the 'Rank' and 'Color' columns
+  gt_table <- gt_table %>%
+    cols_hide(columns = c(Rank, Color))
+  
+
+  # return the gt_table and gender_region_occurrences
+  return(list(Table = gt_table, Occurrences = gender_region_occurrences))
+
+}
+```
+
+## Assign and display the results for the Female pain macroregions
+
+```{r}
+female_result <- getGenderTables(data, "Female", body_map, body_map_pain_macroregion_format_list, new_color_palette)
+female_table <- female_result$Table
+female_region_occurrences <- female_result$Occurrences ## track female_region_occurrences for use in body image plot
+female_table
+```
+
+## Assign and display the results for the Male pain macroregions
+
+```{r}
+male_result <- getGenderTables(data, "Male", body_map, body_map_pain_macroregion_format_list, new_color_palette)
+male_table <- male_result$Table
+male_region_occurrences <- male_result$Occurrences
+male_table
+```
+
+## Functions for formatting total counts from the excel data to be used in the CHOIRBM package
+
+```{r}
+getGenderDataCounts <- function(data, gender, all_body_map_numbers){
+  # This function is used to generate a data.frame that includes the microregion id, value, and group columns, necessary for plotting with CHOIRBM
+  #
+  # Parameters:
+  #   data: the excel data.frame
+  #   gender: "Male" or "Female" string 
+  #   all_body_map_numbers: flattened list containing all microregion numbers
+  #
+  # Returns:
+  #   data.frame formatted for input with microregion id, value, and group
+  
+  # Create data.frame, filtered for gender
+  gender_data <- data %>% 
+    filter(patient_gender == gender)
+  
+  # Split the "bodymap_regions_csv" column into individual numbers, then count each occurrence
+  number_counts <- gender_data %>%
+    separate_rows(bodymap_regions_csv, sep = ",") %>%
+    group_by(bodymap_regions_csv) %>%
+    summarize(occurrence = n()) %>%
+    ungroup()
+
+  # Create a new dataframe with value as the the occurence count
+  gender_data_totals <- number_counts %>%
+    mutate(id = as.integer(bodymap_regions_csv),
+           value = occurrence) %>%
+    select(id, value)
+
+  # Check which numbers are not in gender_data_totals$id and add them with value = 0
+  missing_numbers <- all_body_map_numbers[!all_body_map_numbers %in% gender_data_totals$id]
+  missing_data <- data.frame(id = missing_numbers, value = rep(0, length(missing_numbers)))
+
+  # Combine the original dataframe with the missing data
+  final_gender_data_counts <- rbind(gender_data_totals, missing_data)
+  
+  # Ensure the dataframe is ordered by 'id' after adding missing numbers
+  final_gender_data_counts <- final_gender_data_counts[order(final_gender_data_counts$id),]
+  
+  # Add 'group' column based on the first digit of 'id' - 1 is Front, 2 is Back 
+  final_gender_data_counts <- final_gender_data_counts %>%
+    mutate(group = factor(ifelse(substr(as.character(id), 1, 1) == "1", "Front", "Back")))
+  
+  # Make sure the groups are defined as Levels - necessary for correct plotting with CHOIRBM 
+  final_gender_data_counts$group <- factor(final_gender_data_counts$group, levels = c("Front", "Back"))
+  
+  # Assign id as character value
+  final_gender_data_counts <- final_gender_data_counts %>%
+    mutate(id = as.character(id))
+  
+  # Remove any NA values
+  final_gender_data_counts <- final_gender_data_counts %>%
+    filter(!is.na(id))
+  
+  # Assign as regular data.frame, not tidy format
+  final_gender_data_counts <- as.data.frame(final_gender_data_counts)
+                                   
+  return(final_gender_data_counts)             
+}
+
+```
+
+## Generate Female Data Counts and Plot Body Macroregion Map 
+
+```{r}
+female_data_counts <- getGenderDataCounts(data, "Female", all_body_map_numbers)
+# plot_female_macroregions_with_counts is a new function in the CHOIRBM package. find under CHOIRBM/R/plot_female_macroregions_with_counts.R
+female_plot <- plot_female_macroregions_with_counts(female_data_counts, "value", female_region_occurrences$percent_occurrences, new_color_palette, body_map)
+female_plot
+```
+
+## Generate Male Data Counts and Plot Body Macroregion Map 
+
+```{r}
+male_data_counts <- getGenderDataCounts(data, "Male", all_body_map_numbers)
+# plot_male_macroregions_with_counts is a new function in the CHOIRBM package. find under CHOIRBM/R/plot_male_macroregions_with_counts.R
+male_plot <- plot_male_macroregions_with_counts(male_data_counts, "value", male_region_occurrences$percent_occurrences, new_color_palette, body_map)
+male_plot
+```
+
+## Create data.frame with Total Occurrences, and Create Total Occurrence table 
+
+```{r}
+
+## assign totals 
+n_total <- nrow(data)
+n_female <- sum(data$patient_gender == "Female")
+n_male <- sum(data$patient_gender == "Male")
+
+# Map the region names to the full labels
+full_labels <- sapply(names(body_map_pain_macroregion_format_list), 
+                      function(x) paste(body_map_pain_macroregion_format_list[[x]], "Region"))
+
+# Calculate Overall percentages
+overall_percentages <- (female_region_occurrences$total_occurrences + male_region_occurrences$total_occurrences) / n_total * 100
+
+# Create a combined dataframe with occurrences and percentages
+combined_data <- data.frame(
+  BodymapRegions = names(female_region_occurrences$total_occurrences),
+  Overall = paste(female_region_occurrences$total_occurrences + male_region_occurrences$total_occurrences, " (", sprintf("%.1f", overall_percentages), ")", sep = ""),
+  Female = paste(female_region_occurrences$total_occurrences, " (", sprintf("%.1f", female_region_occurrences$percent_occurrences), ")", sep = ""),
+  Male = paste(male_region_occurrences$total_occurrences, " (", sprintf("%.1f", male_region_occurrences$percent_occurrences), ")", sep = "")
+)
+
+# Map the region names to the full labels with " Region" appended
+combined_data$BodymapRegions <- sapply(combined_data$BodymapRegions, function(x) {
+  paste(body_map_pain_macroregion_format_list[[x]], "Region")
+})
+
+# Create the GT table
+overall_table <- gt(combined_data) %>%
+ cols_label(
+    BodymapRegions = "Bodymap Regions with reported pain",
+    Overall = paste("Overall (n=", n_total, ")", sep = ""),
+    Female = paste("Female (n=", n_female, ")", sep = ""),
+    Male = paste("Male (n=", n_male, ")", sep = "")
+  ) %>%
+  tab_options(column_labels.font.weight = "bold") %>%
+  fmt_passthrough(columns = c(Overall, Female, Male))  # Use fmt_passthrough to keep the formatting as is
+
+## Add borders to the table
+overall_table <- overall_table %>%
+  # Apply borders to the body of the table
+  tab_style(
+    style = cell_borders(
+      sides = "all", # Apply borders to all sides of each cell in the body
+      color = "gray",
+      weight = px(1)
+    ),
+    locations = cells_body(columns = everything(), rows = TRUE)
+  ) %>%
+  # Apply borders to the column labels
+  tab_style(
+    style = cell_borders(
+      sides = "all", # Apply borders to all sides of the column label cells
+      color = "gray",
+      weight = px(1)
+    ),
+    locations = cells_column_labels(columns = everything())
+  ) %>%
+  # Apply borders to the table title
+  tab_style(
+    style = cell_borders(
+      sides = "all", # Apply borders around the table title
+      color = "gray",
+      weight = px(1)
+    ),
+    locations = cells_title(groups = "title")
+  )
+
+# Print the GT table
+overall_table
+
+```
+
+## Save Table and Body Macroregion Images in outputs folder
+
+```{r}
+ggsave("outputs/female_plot.png", plot = female_plot, width = 10, height = 6, dpi = 300) ## adjust dpi (dots per inch) to change resolution (higher means higher res)
+gtsave(female_table, filename = "outputs/female_table.png")
+ggsave("outputs/male_plot.png", plot = male_plot, width = 10, height = 6, dpi = 300)
+gtsave(male_table, filename = "outputs/male_table.png")
+gtsave(overall_table, filename = "outputs/overall_table.png")
+```
